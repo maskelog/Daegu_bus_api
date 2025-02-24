@@ -57,7 +57,6 @@ app.use((0, cors_1.default)());
 /* ================================
    asyncHandler 유틸리티 함수
 ================================ */
-// async 함수에서 발생한 에러를 next()로 전달하여 Express 에러 핸들링 미들웨어로 넘기도록 함
 const asyncHandler = (fn) => {
     return (req, res, next) => {
         Promise.resolve(fn(req, res, next)).catch(next);
@@ -72,6 +71,30 @@ const encodeEUC_KR = (text) => {
         .map((byte) => `%${byte.toString(16).toUpperCase()}`)
         .join('');
 };
+/**
+ * 버스 도착 정보 데이터 변환 함수
+ */
+function transformBusArrivalData(originalData) {
+    const transformedBuses = [];
+    originalData.body.list.forEach((route) => {
+        route.arrList.forEach((bus) => {
+            // 저상버스 여부 확인 (busTCd2가 'D'인 경우)
+            const isLowFloor = bus.busTCd2 === 'D';
+            const busNumber = isLowFloor ? `${bus.routeNo}(저상)` : bus.routeNo;
+            const busInfo = {
+                버스번호: busNumber,
+                현재정류소: bus.bsNm,
+                남은정류소: `${bus.bsGap} 개소`,
+                도착예정소요시간: bus.arrState
+            };
+            transformedBuses.push(busInfo);
+        });
+    });
+    return {
+        header: originalData.header,
+        bus: transformedBuses
+    };
+}
 /* ================================
    서비스 함수
 ================================ */
@@ -174,7 +197,7 @@ const getBusPositionInfo = (routeId) => __awaiter(void 0, void 0, void 0, functi
    라우터 정의
 ================================ */
 // 정류장 검색 API
-app.get('/api/bs/search', asyncHandler((req, res, next) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/bs/search', asyncHandler((req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { searchText, wincId, routeTCd } = req.query;
     const params = new URLSearchParams();
     if (searchText)
@@ -208,7 +231,8 @@ app.get('/api/bs/search', asyncHandler((req, res, next) => __awaiter(void 0, voi
 // 버스 도착 정보 API
 app.get('/api/arrival/:stationId', asyncHandler((req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const busArrivalData = yield getBusArrivalInfo(req.params.stationId);
-    res.json(busArrivalData);
+    const transformedData = transformBusArrivalData(busArrivalData);
+    res.json(transformedData);
 })));
 // 버스 노선 조회 API
 app.get('/api/bs/route', asyncHandler((req, res) => __awaiter(void 0, void 0, void 0, function* () {

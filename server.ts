@@ -12,16 +12,6 @@ const port: number = 8080;
 app.use(cors());
 
 /* ================================
-   asyncHandler 유틸리티 함수
-================================ */
-// async 함수에서 발생한 에러를 next()로 전달하여 Express 에러 핸들링 미들웨어로 넘기도록 함
-const asyncHandler = (fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) => {
-  return (req: Request, res: Response, next: NextFunction) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
-};
-
-/* ================================
    인터페이스 정의
 ================================ */
 interface BusArrival {
@@ -51,32 +41,45 @@ interface BusArrival {
   };
 }
 
+interface TransformedBusInfo {
+  버스번호: string;
+  현재정류소: string;
+  남은정류소: string;
+  도착예정소요시간: string;
+}
+
+interface TransformedResponse {
+  header: {
+    success: boolean;
+    resultCode: string;
+    resultMsg: string;
+  };
+  bus: TransformedBusInfo[];
+}
+
 interface StationSearchResult {
   name: string;
   id: string;
 }
 
-interface ArrivalData {
-  routeId: string;
-  routeNo: string;
-  routeNote: string;
-  moveDir: string;
-  bsGap: number;
-  bsNm: string;
-  crfId: number;
-  vhcNo2: string;
-  busTCd2: string;
-  busTCd3: string;
-  busAreaCd: string;
-  arrState: string;
-  prevBsGap: number;
+interface XMLResponse {
+  response: {
+    header: {
+      resultCode: string;
+      resultMsg: string;
+    };
+    body?: any;
+  };
 }
 
-interface StationArrivalResponse {
-  stationName: string;
-  stationId: string;
-  buses: ArrivalData[];
-}
+/* ================================
+   asyncHandler 유틸리티 함수
+================================ */
+const asyncHandler = (fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+};
 
 /* ================================
    유틸리티 함수
@@ -87,6 +90,35 @@ const encodeEUC_KR = (text: string): string => {
     .map((byte) => `%${byte.toString(16).toUpperCase()}`)
     .join('');
 };
+
+/**
+ * 버스 도착 정보 데이터 변환 함수
+ */
+function transformBusArrivalData(originalData: BusArrival): TransformedResponse {
+  const transformedBuses: TransformedBusInfo[] = [];
+  
+  originalData.body.list.forEach((route) => {
+    route.arrList.forEach((bus) => {
+      // 저상버스 여부 확인 (busTCd2가 'D'인 경우)
+      const isLowFloor = bus.busTCd2 === 'D';
+      const busNumber = isLowFloor ? `${bus.routeNo}(저상)` : bus.routeNo;
+      
+      const busInfo: TransformedBusInfo = {
+        버스번호: busNumber,
+        현재정류소: bus.bsNm,
+        남은정류소: `${bus.bsGap} 개소`,
+        도착예정소요시간: bus.arrState
+      };
+      
+      transformedBuses.push(busInfo);
+    });
+  });
+
+  return {
+    header: originalData.header,
+    bus: transformedBuses
+  };
+}
 
 /* ================================
    서비스 함수
@@ -143,7 +175,7 @@ const getBusArrivalInfo = async (stationId: string): Promise<BusArrival> => {
 /**
  * 버스 노선 조회 서비스 함수 (XML → JSON)
  */
-const getBusRouteInfo = async (routeId: string): Promise<any> => {
+const getBusRouteInfo = async (routeId: string): Promise<XMLResponse> => {
   const url = `https://businfo.daegu.go.kr:8095/dbms_web_api/bs/route?routeId=${routeId}`;
   const response = await axios.get(url, {
     responseType: 'text',
@@ -153,10 +185,10 @@ const getBusRouteInfo = async (routeId: string): Promise<any> => {
       "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
     }
   });
-  const xmlData: string = response.data as string;
+  const xmlData: string = response.data as unknown as string;
   const parser = new Parser({ explicitArray: false });
   return new Promise((resolve, reject) => {
-    parser.parseString(xmlData, (err, result) => {
+    parser.parseString(xmlData, (err: Error | null, result: XMLResponse) => {
       if (err) {
         reject(err);
       } else {
@@ -169,7 +201,7 @@ const getBusRouteInfo = async (routeId: string): Promise<any> => {
 /**
  * 실시간 버스 위치 조회 서비스 함수 (XML → JSON)
  */
-const getBusPositionInfo = async (routeId: string): Promise<any> => {
+const getBusPositionInfo = async (routeId: string): Promise<XMLResponse> => {
   const url = `https://businfo.daegu.go.kr:8095/dbms_web_api/realtime/pos/${routeId}`;
   const response = await axios.get(url, {
     responseType: 'text',
@@ -182,7 +214,7 @@ const getBusPositionInfo = async (routeId: string): Promise<any> => {
   const xmlData = response.data;
   const parser = new Parser({ explicitArray: false });
   return new Promise((resolve, reject) => {
-    parser.parseString(xmlData as string, (err, result) => {
+    parser.parseString(xmlData as string, (err: Error | null, result: XMLResponse) => {
       if (err) {
         reject(err);
       } else {
@@ -196,7 +228,7 @@ const getBusPositionInfo = async (routeId: string): Promise<any> => {
    라우터 정의
 ================================ */
 // 정류장 검색 API
-app.get('/api/bs/search', asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
+app.get('/api/bs/search', asyncHandler(async (req: Request, res: Response) => {
   const { searchText, wincId, routeTCd } = req.query;
   
   const params = new URLSearchParams();
@@ -217,7 +249,7 @@ app.get('/api/bs/search', asyncHandler(async (req: Request, res: Response, next:
   });
   const xmlData = response.data;
   const parser = new Parser({ explicitArray: false });
-  parser.parseString(xmlData as string, (err, result) => {
+  parser.parseString(xmlData as string, (err: Error | null, result: XMLResponse) => {
     if (err) {
       console.error('XML 파싱 오류:', err);
       res.status(500).json({ error: 'XML 파싱 실패' });
@@ -230,7 +262,8 @@ app.get('/api/bs/search', asyncHandler(async (req: Request, res: Response, next:
 // 버스 도착 정보 API
 app.get('/api/arrival/:stationId', asyncHandler(async (req: Request, res: Response) => {
   const busArrivalData = await getBusArrivalInfo(req.params.stationId);
-  res.json(busArrivalData);
+  const transformedData = transformBusArrivalData(busArrivalData);
+  res.json(transformedData);
 }));
 
 // 버스 노선 조회 API
